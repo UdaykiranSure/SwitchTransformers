@@ -94,6 +94,20 @@ class Experts(nn.Module):
 
 
 
+class SparseMLP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+
+        self.router = Router(config)
+        self.experts = Experts(config)
+
+    def forward(self, hidden_states):
+        batch_size, sequence_length, hidden_dim = hidden_states.shape
+        hidden_states = hidden_states.view(-1, hidden_dim)
+        _, selected_experts, routing_weights = self.router(hidden_states)
+        hidden_states = self.experts(hidden_states, selected_experts, routing_weights)
+        hidden_states = hidden_states.reshape(batch_size, sequence_length, hidden_dim)
+        return hidden_states
 
 
     
