@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 class Router(nn.Module):
     def __init__(self, config):
         """
@@ -49,6 +50,27 @@ class Router(nn.Module):
         expert_indices *= expert_capacity_mask
 
         return expert_indices, router_logits
+
+class DenseActDense(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.wi = nn.Linear(config.d_model, config.d_ff, bias=False)
+        self.wo = nn.Linear(config.d_ff, config.d_model, bias=False)
+        self.dropout = nn.Dropout(config.dropout_rate)
+        self.act = nn.ReLU()
+
+    def forward(self, hidden_states):
+        hidden_states = self.wi(hidden_states)
+        hidden_states = self.dropout(hidden_states)
+        hidden_states = self.act(hidden_states)
+        
+        if (hidden_states.dtype != wo.weight.dtype):
+            hidden_states.dtype = wo.weight.dtype
+        hidden_states = self.wo(hidden_states)
+
+        return hidden_states
+
+
 
     
 
