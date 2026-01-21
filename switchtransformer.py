@@ -28,7 +28,7 @@ class Router(nn.Module):
         hidden: hidden representations #(batch_size, seq_len, d_model)
 
         outputs:
-        router probabilites: probabilites of each router for each token #(batch_size, seq_len, n_experts)
+        expert indices: one hot encoding of argmax probs of router for each token  #(batch_size, seq_len, n_experts)
         router logits: raw logits before softmaxing the probs #(batch_size, seq_len, n_experts)
 
         """
@@ -51,6 +51,7 @@ class Router(nn.Module):
 
         return expert_indices, router_logits
 
+
 class DenseActDense(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -69,6 +70,29 @@ class DenseActDense(nn.Module):
         hidden_states = self.wo(hidden_states)
 
         return hidden_states
+
+class Experts(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        
+        self.n_experts = config.n_experts
+        self.experts = nn.ModuleDict()
+        for i in range(self.n_experts):
+            self.experts[f'expert_{i}'] = DenseActDense(config)
+
+    def forward(self, hidden_states, selected_experts, routing_weights):
+        final_hidden_states = torch.zeros_like(hidden_states)
+        expert_mask = selected_experts.permute(2, 1, 0)
+
+        expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+        for expert_idx in expert_hit:
+            idx, top_x = torch.where(expert_mask[expert_idx].squeeze(0))
+            current_state = hidden_states[None, top_x].reshape(-1, hidden_states.shape[-1])
+            current_hidden_states = self.experts[f"expert_{expert_idx[0]}"](current_state) * routing_weights[top_x, idx, None]
+            final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
+        return final_hidden_states
+
+
 
 
 
