@@ -211,6 +211,51 @@ class DecoderBlock(nn.Module):
         hidden_states = self.denseMLP(hidden_states)
         return hidden_states
 
+
+class SwitchTransformer(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+
+        if config.is_decoder:
+            Block = DecoderBlock 
+        else:
+            Block = EncoderBlock
+
+        self.transformer = nn.ModuleDict(dict(
+            wte = nn.Embedding(config.vocab_size, config.d_model),
+            wpe = nn.Embedding(config.block_size, d_model),
+            h = nn.ModuleList([ Block(config) for _ in range(config.n_layers)])
+        ))
+        self.lm_head = nn.Linear(config.d_model, config.vocab_size)
+
+        self.lm_head.weight = self.transformer.wte.weight  # weight sharing
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        mean, std = 0, 0.02
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight,mean, std)
+            nn.init.zeros_(module)
+        if isinstance(module, Embedding):
+            nn.init.normal_(module,mean, std)
+
+    def forward(self, idx,  encoder_states=None,targets = None):
+        inp_embs = self.transformer.wte(idx)
+        pos_embs = self.transformer.wpe(idx)
+
+        x = inp_embs + pos_embs
+
+        for block in self.transformer.h:
+            x = block(x, encoder_states)
+        out = self.lm_head(x)
+
+        loss = F.cross_entropy(out, targets)
+        return out,loss
+    
+
+
 class SwitchTransformerConfig():
     """
     Args:
