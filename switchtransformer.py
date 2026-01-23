@@ -111,23 +111,73 @@ class SparseMLP(nn.Module):
         return hidden_states
 
     
-class MLP(nn.Module):
+class LayerFF(nn.Module):
     def __init__(self, config, is_sparse = False):
         super().__init__()
         if is_sparse:
-            self.mlp = SparseMLP(config)
+            self.ff = SparseMLP(config)
         else:
-            self.mlp = DenseActDense(config)
+            self.ff = DenseActDense(config)
 
     def forward(self, hidden_states):
-        hidden_states = self.mlp(hidden_states)
+        hidden_states = self.ff(hidden_states)
         return hidden_states
     
 
-
-
-
+class Attention(nn.Module):
+    def __init__(self, config, masked = True):
+        assert config.d_kv%config.n_heads == 0
+        super().__init__()
+        self.masked = masked
+        self.query = nn.Linear(config.d_model, config.d_kv, bias = False)
+        self.key = nn.Linear(config.d_model, config.d_kv, bias = False)
+        self.value = nn.Linear(config.d_model, config.d_kv, bias = False)
+        self.o = nn.Linaer(config.d_kv, config.d_model)
     
+    def forward(self, hidden_states,encoder_states = None):
+        B,seq_len,d_model = hidden_states.shape
+        q = self.query(hidden_states).view(B,config.n_heads, seq_len, config.d_kv//config.n_heads)
+
+        if not encoder_states:
+            encoder_states = hidden_states
+
+        k = self.key(encoder_states).view(B,config.n_heads, seq_len, config.d_kv//config.n_heads)
+        v = self.value(encoder_states).view(B,config.n_heads, seq_len, config.d_kv//config.n_heads)
+
+        wei = q@k.transpose(-1,-2)
+
+        if masked:
+            mask = torch.tril(torch.ones(seq_len,seq_len))
+            wei = torch.masked_fill(wei, mask == 0, -torch.inf)
+
+        attn = F.softmax(wei/(config.d_kv//n_heads), 3) @ v
+        out = attn.transpose(1,2).view(B, seq_len, d_model)
+        out = self.o(out)
+
+        return out
+        
+class SelfAttention(nn.Module):
+    def __init__(self, config, masked = True):
+        self.selfattn = Attention(config, masked)
+
+    def forward(self, hidden_states):
+        return self.selfattn(hidden_states)
+
+class CrossAttention(nn.Module):
+    def __init__(self, config, masked = True):
+        self.enc_dec_attn = Attention(config, masked)
+
+    def forward(self, hidden_states, encoder_states):
+        return self.enc_dec_attn(hidden_states, encoder_states)
+
+
+class SwitchTransformerConfig():
+    """
+    Args:
+    d_model: hidden state dimention
+    d_kv: key
+    """
+    pass    
 
 
 
