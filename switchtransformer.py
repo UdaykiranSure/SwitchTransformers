@@ -35,6 +35,7 @@ class Router(nn.Module):
 
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(self.router_dtype)
+
         # multiplicative jitter noise on the incoming representation
         if self.jitter_noise > 0:
             hidden_states *= torch.distributions.Uniform(1-self.jitter_noise, 1+self.jitter_noise).sample(hidden_states.shape)
@@ -109,8 +110,25 @@ class SparseMLP(nn.Module):
         hidden_states = hidden_states.reshape(batch_size, sequence_length, hidden_dim)
         return hidden_states
 
+    
+class MLP(nn.Module):
+    def __init__(self, config, is_sparse = False):
+        super().__init__()
+        if is_sparse:
+            self.mlp = SparseMLP(config)
+        else:
+            self.mlp = DenseActDense(config)
+
+    def forward(self, hidden_states):
+        hidden_states = self.mlp(hidden_states)
+        return hidden_states
+    
+
+
+
 
     
+
 
 
 
