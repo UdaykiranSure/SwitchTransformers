@@ -158,18 +158,58 @@ class Attention(nn.Module):
         
 class SelfAttention(nn.Module):
     def __init__(self, config, masked = True):
+        super().__init__()
         self.selfattn = Attention(config, masked)
 
     def forward(self, hidden_states):
         return self.selfattn(hidden_states)
 
 class CrossAttention(nn.Module):
-    def __init__(self, config, masked = True):
-        self.enc_dec_attn = Attention(config, masked)
+    def __init__(self, config):
+        super().__init__()
+        self.enc_dec_attn = Attention(config, masked=False)
 
     def forward(self, hidden_states, encoder_states):
         return self.enc_dec_attn(hidden_states, encoder_states)
 
+
+class EncoderBlock(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(config.d_model)
+        self.selfattn1 = SelfAttention(config, masked=False)
+        self.spareMLP = LayerFF(config,is_sparse=True)
+        self.ln2 = nn.LayerNorm(config.d_model)
+        self.selfattn2 = SelfAttention(config, masked=False)
+        self.denseMLP = LayerFF(config, is_sparse=False)
+
+    def forward(self, hidden_states):
+        hidden_states = self.ln1(hidden_states)
+        hidden_states = hidden_states + self.selfattn1(hidden_states)  #residual connection
+        hidden_states = self.spareMLP(hidden_states)
+        hidden_states = self.ln2(hidden_states) 
+        hidden_states = hidden_states + self.selfattn2(hidden_states)  # residual connection
+        hidden_states = self.denseMLP(hidden_states)
+        return hidden_states
+
+class DecoderBlock(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(config.d_model)
+        self.selfattn = SelfAttention(config, masked=True)
+        self.sparseMLP = LayerFF(config, is_sparse=True)
+        self.ln2 = nn.LayerNorm(config.d_model)
+        self.crossattn = CrossAttention(config)
+        self.denseMLP = LayerFF(config, is_sparse=True)
+
+    def forward(self, hidden_states,encoder_states):
+        hidden_states = self.ln1(hidden_states)
+        hidden_states = hidden_states + self.selfattn(hidden_states)  #residual connection
+        hidden_states = self.sparseMLP(hidden_states)
+        hidden_states = self.ln2(hidden_states)
+        hidden_states = hidden_states + self.crossattn(hidden_states,encoder_states)  #residaul connection
+        hidden_states = self.denseMLP(hidden_states)
+        return hidden_states
 
 class SwitchTransformerConfig():
     """
