@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from config import SwitchTransformerConfig
 
 class Router(nn.Module):
     def __init__(self, config):
@@ -18,7 +19,7 @@ class Router(nn.Module):
         self.expert_capacity = config.expert_capacity
         self.jitter_noise = config.jitter_noise
         self.ignore_padded_tokens = config.ignore_padded_tokens
-        self.router_dtype = config.routet_dtype
+        self.router_dtype = config.router_dtype
 
         self.AuxLoss = AuxLoss(config)
         self.classifier = nn.Linear(self.d_model, self.n_experts)
@@ -138,20 +139,22 @@ class Attention(nn.Module):
         assert config.d_kv%config.n_heads == 0
         super().__init__()
         self.masked = masked
+        self.d_kv = config.d_kv
+        self.n_heads = config.n_heads
         self.query = nn.Linear(config.d_model, config.d_kv, bias = False)
         self.key = nn.Linear(config.d_model, config.d_kv, bias = False)
         self.value = nn.Linear(config.d_model, config.d_kv, bias = False)
-        self.o = nn.Linaer(config.d_kv, config.d_model)
+        self.o = nn.Linear(config.d_kv, config.d_model)
     
     def forward(self, hidden_states,encoder_states = None):
         B,seq_len,d_model = hidden_states.shape
-        q = self.query(hidden_states).view(B,config.n_heads, seq_len, config.d_kv//config.n_heads)
+        q = self.query(hidden_states).view(B,self.n_heads, seq_len, self.d_kv//sefl.n_heads)
 
         if not encoder_states:
             encoder_states = hidden_states
 
-        k = self.key(encoder_states).view(B,config.n_heads, seq_len, config.d_kv//config.n_heads)
-        v = self.value(encoder_states).view(B,config.n_heads, seq_len, config.d_kv//config.n_heads)
+        k = self.key(encoder_states).view(B,self.n_heads, seq_len, self.d_kv//self.n_heads)
+        v = self.value(encoder_states).view(B,self.n_heads, seq_len, self.d_kv//self.n_heads)
 
         wei = q@k.transpose(-1,-2)
 
@@ -159,12 +162,13 @@ class Attention(nn.Module):
             mask = torch.tril(torch.ones(seq_len,seq_len))
             wei = torch.masked_fill(wei, mask == 0, -torch.inf)
 
-        attn = F.softmax(wei/(config.d_kv//n_heads), 3) @ v
+        attn = F.softmax(wei/(self.d_kv//self.n_heads), 3) @ v
         out = attn.transpose(1,2).view(B, seq_len, d_model)
         out = self.o(out)
 
         return out
         
+
 class SelfAttention(nn.Module):
     def __init__(self, config, masked = True):
         super().__init__()
@@ -233,7 +237,7 @@ class SwitchTransformer(nn.Module):
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.d_model),
-            wpe = nn.Embedding(config.block_size, d_model),
+            wpe = nn.Embedding(config.seq_len, config.d_model),
             h = nn.ModuleList([ Block(config) for _ in range(config.n_layers)])
         ))
         self.lm_head = nn.Linear(config.d_model, config.vocab_size)
@@ -246,9 +250,10 @@ class SwitchTransformer(nn.Module):
         mean, std = 0, 0.02
         if isinstance(module, nn.Linear):
             nn.init.normal_(module.weight,mean, std)
-            nn.init.zeros_(module)
-        if isinstance(module, Embedding):
-            nn.init.normal_(module,mean, std)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        if isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight,mean, std)
 
     def forward(self, idx,  encoder_states=None,targets = None):
         inp_embs = self.transformer.wte(idx)
@@ -260,14 +265,16 @@ class SwitchTransformer(nn.Module):
             x,aux_loss = block(x, encoder_states)
             cum_aux_loss += aux_loss
         out = self.lm_head(x)
-
-        loss = F.cross_entropy(out, targets)
-        loss += cum_aux_loss
-        return out,loss
+        if targets:
+            loss = F.cross_entropy(out, targets)
+            loss += cum_aux_loss
+            return out, loss
+        return out
     
 
 class AuxLoss(nn.Module):
     def __init__(self, config):
+        super().__init__()
         self.seq_len = config.seq_len
         self.n_experts = config.n_experts
     
@@ -276,19 +283,5 @@ class AuxLoss(nn.Module):
         pi = router_probs.sum(-2) / self.seq_len   #(batch_size, n_experts)
         aux_loss = self.n_experts* (fi*pi).sum(-1) #(batch_size,)
         return aux_loss.mean()
-
-
-
-class SwitchTransformerConfig():
-    """
-    Args:
-    d_model: hidden state dimention
-    d_kv: key
-    """
-    pass    
-
-
-
-
 
 
