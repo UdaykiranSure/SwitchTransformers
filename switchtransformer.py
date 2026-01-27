@@ -40,17 +40,17 @@ class Router(nn.Module):
         if self.jitter_noise > 0:
             hidden_states *= torch.distributions.Uniform(1-self.jitter_noise, 1+self.jitter_noise).sample(hidden_states.shape)
         
-        router_logits = self.classifier(hidden_states)
-        router_probs = F.softmax(logits, dim=-1)
+        router_logits = self.classifier(hidden_states)  #(batch_size, seq_len, n_experts)
+        router_probs = F.softmax(router_logits, dim=-1)
 
-        router_logits, expert_indices = torch.max(router_probs,dim=-1, keepdim=True)
-        expert_indices = F.one_hot(expert_indices,sefl.n_experts)
+        top1_probs, expert_indices = torch.max(router_probs,dim=-1, keepdim=True)
+        expert_indices = F.one_hot(expert_indices,sefl.n_experts).squeeze(-3)
 
         token_priority = torch.cumsum(expert_indices, dim=-2)
         expert_capacity_mask = token_priority <= self.expert_capacity
         expert_indices *= expert_capacity_mask
 
-        return expert_indices, router_logits
+        return expert_indices, top1_probs, router_probs
 
 
 class DenseActDense(nn.Module):
@@ -254,6 +254,18 @@ class SwitchTransformer(nn.Module):
         loss = F.cross_entropy(out, targets)
         return out,loss
     
+
+class AuxLoss(nn.Module):
+    def __init__(self, config):
+        self.seq_len = config.seq_len
+        self.n_experts = config.n_experts
+    
+    def forward(self, expert_indices, router_probs):
+        fi = expert_indices.sum(-2) / self.seq_len #(batch_size, n_experts)
+        pi = router_probs.sum(-2) / self.seq_len   #(batch_size, n_experts)
+        aux_loss = self.n_experts* (fi*pi).sum(-1) #(batch_size,)
+        return aux_loss.mean()
+
 
 
 class SwitchTransformerConfig():
