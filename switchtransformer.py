@@ -20,6 +20,7 @@ class Router(nn.Module):
         self.ignore_padded_tokens = config.ignore_padded_tokens
         self.router_dtype = config.routet_dtype
 
+        self.AuxLoss = AuxLoss(config)
         self.classifier = nn.Linear(self.d_model, self.n_experts)
 
     def forward(self, hidden_states: torch.Tensor):
@@ -49,8 +50,8 @@ class Router(nn.Module):
         token_priority = torch.cumsum(expert_indices, dim=-2)
         expert_capacity_mask = token_priority <= self.expert_capacity
         expert_indices *= expert_capacity_mask
-
-        return expert_indices, top1_probs, router_probs
+        aux_loss = self.AuxLoss(expert_indices, router_probs)
+        return expert_indices, top1_probs, router_probs, aux_loss
 
 
 class DenseActDense(nn.Module):
