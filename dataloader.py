@@ -1,5 +1,7 @@
+import torch
 import tiktoken 
 from config import SwitchTransformerConfig
+
 class Dataloader():
     def __init__(self, config):
         self.batch_size = config.batch_size
@@ -18,7 +20,7 @@ class Dataloader():
         return tokens
     
     def next_batch(self):
-        B,T = self.batch_size[0], self.seq_len[0]
+        B,T = self.batch_size, self.seq_len
         buf = self.tokens[self.current_pos: self.current_pos+ B*T + 1]
         x = buf[:-1].view(B,T)
         y = buf[1:].view(B,T)
