@@ -46,7 +46,7 @@ class Router(nn.Module):
         router_probs = F.softmax(router_logits, dim=-1)
 
         top1_probs, expert_indices = torch.max(router_probs,dim=-1, keepdim=True)
-        expert_indices = F.one_hot(expert_indices,sefl.n_experts).squeeze(-3)
+        expert_indices = F.one_hot(expert_indices,self.n_experts).squeeze(-3)
 
         token_priority = torch.cumsum(expert_indices, dim=-2)
         expert_capacity_mask = token_priority <= self.expert_capacity
@@ -68,7 +68,7 @@ class DenseActDense(nn.Module):
         hidden_states = self.dropout(hidden_states)
         hidden_states = self.act(hidden_states)
         
-        if (hidden_states.dtype != wo.weight.dtype):
+        if (hidden_states.dtype != self.wo.weight.dtype):
             hidden_states.dtype = wo.weight.dtype
         hidden_states = self.wo(hidden_states)
 
@@ -107,7 +107,7 @@ class SparseMLP(nn.Module):
     def forward(self, hidden_states):
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
-        _, selected_experts, routing_weights, aux_loss = self.router(hidden_states)
+        selected_experts, top1_probs, routing_weights, aux_loss = self.router(hidden_states)
         hidden_states = self.experts(hidden_states, selected_experts, routing_weights)
         hidden_states = hidden_states.reshape(batch_size, sequence_length, hidden_dim)
         return hidden_states,aux_loss
@@ -148,7 +148,7 @@ class Attention(nn.Module):
     
     def forward(self, hidden_states,encoder_states = None):
         B,seq_len,d_model = hidden_states.shape
-        q = self.query(hidden_states).view(B,self.n_heads, seq_len, self.d_kv//sefl.n_heads)
+        q = self.query(hidden_states).view(B,self.n_heads, seq_len, self.d_kv//self.n_heads)
 
         if not encoder_states:
             encoder_states = hidden_states
@@ -158,12 +158,11 @@ class Attention(nn.Module):
 
         wei = q@k.transpose(-1,-2)
 
-        if masked:
+        if self.masked:
             mask = torch.tril(torch.ones(seq_len,seq_len))
             wei = torch.masked_fill(wei, mask == 0, -torch.inf)
-
         attn = F.softmax(wei/(self.d_kv//self.n_heads), 3) @ v
-        out = attn.transpose(1,2).view(B, seq_len, d_model)
+        out = attn.transpose(1,2).reshape(B, seq_len, self.d_kv)
         out = self.o(out)
 
         return out
@@ -213,7 +212,7 @@ class DecoderBlock(nn.Module):
         self.sparseMLP = LayerFF(config, is_sparse=True)
         self.ln2 = nn.LayerNorm(config.d_model)
         self.crossattn = CrossAttention(config)
-        self.denseMLP = LayerFF(config, is_sparse=True)
+        self.denseMLP = LayerFF(config, is_sparse=False)
 
     def forward(self, hidden_states,encoder_states):
         hidden_states = self.ln1(hidden_states)
@@ -237,7 +236,7 @@ class SwitchTransformer(nn.Module):
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.d_model),
-            wpe = nn.Embedding(config.seq_len, config.d_model),
+            wpe = nn.Embedding(config.vocab_size, config.d_model),
             h = nn.ModuleList([ Block(config) for _ in range(config.n_layers)])
         ))
         self.lm_head = nn.Linear(config.d_model, config.vocab_size)
@@ -262,14 +261,14 @@ class SwitchTransformer(nn.Module):
         x = inp_embs + pos_embs
         cum_aux_loss = 0
         for block in self.transformer.h:
-            x,aux_loss = block(x, encoder_states)
+            x, aux_loss = block(hidden_states = x, encoder_states = encoder_states)
             cum_aux_loss += aux_loss
-        out = self.lm_head(x)
-        if targets:
-            loss = F.cross_entropy(out, targets)
+        logits = self.lm_head(x)
+        if targets is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
             loss += cum_aux_loss
-            return out, loss
-        return out
+            return logits, loss
+        return logits
     
 
 class AuxLoss(nn.Module):
