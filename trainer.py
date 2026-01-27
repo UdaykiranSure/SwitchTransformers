@@ -1,4 +1,5 @@
 import torch
+import numpy
 import torch.nn as nn
 from dataloader import Dataloader
 
@@ -18,11 +19,11 @@ def train(config, model):
             x,y = dataloader.next_batch()
             out, loss = model.forward(x,targets = y)
             loss.backward()
-            norm = torch.nn.utils.clip_grad_norm(model.parameters(), 1)
+            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1)
             running_loss.append(loss.item())
             optim.step()
         losses[f'epoch_{i}'] = running_loss
-        print(f'epcohs:{i}/{config.epcohs} | loss: {running_loss.mean().item():.4f} | ')
+        print(f'epcohs:{i}/{config.epochs} | loss: {numpy.mean(running_loss):.4f} | ')
 
 
 
