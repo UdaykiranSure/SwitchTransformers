@@ -106,14 +106,15 @@ class SparseMLP(nn.Module):
     def forward(self, hidden_states):
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
-        _, selected_experts, routing_weights = self.router(hidden_states)
+        _, selected_experts, routing_weights, aux_loss = self.router(hidden_states)
         hidden_states = self.experts(hidden_states, selected_experts, routing_weights)
         hidden_states = hidden_states.reshape(batch_size, sequence_length, hidden_dim)
-        return hidden_states
+        return hidden_states,aux_loss
 
     
 class LayerFF(nn.Module):
     def __init__(self, config, is_sparse = False):
+        self.is_sparse = is_sparse
         super().__init__()
         if is_sparse:
             self.ff = SparseMLP(config)
@@ -121,8 +122,15 @@ class LayerFF(nn.Module):
             self.ff = DenseActDense(config)
 
     def forward(self, hidden_states):
-        hidden_states = self.ff(hidden_states)
-        return hidden_states
+        """
+        if self.is_sparse:
+            return (hidden_states, aux_loss)
+        else:
+            return hidden_states
+        """
+        out = self.ff(hidden_states)
+
+        return out 
     
 
 class Attention(nn.Module):
@@ -187,11 +195,11 @@ class EncoderBlock(nn.Module):
     def forward(self, hidden_states):
         hidden_states = self.ln1(hidden_states)
         hidden_states = hidden_states + self.selfattn1(hidden_states)  #residual connection
-        hidden_states = self.spareMLP(hidden_states)
+        hidden_states,aux_loss = self.spareMLP(hidden_states)
         hidden_states = self.ln2(hidden_states) 
         hidden_states = hidden_states + self.selfattn2(hidden_states)  # residual connection
         hidden_states = self.denseMLP(hidden_states)
-        return hidden_states
+        return hidden_states,aux_loss
 
 class DecoderBlock(nn.Module):
     def __init__(self, config):
@@ -206,11 +214,11 @@ class DecoderBlock(nn.Module):
     def forward(self, hidden_states,encoder_states):
         hidden_states = self.ln1(hidden_states)
         hidden_states = hidden_states + self.selfattn(hidden_states)  #residual connection
-        hidden_states = self.sparseMLP(hidden_states)
+        hidden_states,aux_loss = self.sparseMLP(hidden_states)
         hidden_states = self.ln2(hidden_states)
         hidden_states = hidden_states + self.crossattn(hidden_states,encoder_states)  #residaul connection
         hidden_states = self.denseMLP(hidden_states)
-        return hidden_states
+        return hidden_states, aux_loss
 
 
 class SwitchTransformer(nn.Module):
@@ -247,12 +255,14 @@ class SwitchTransformer(nn.Module):
         pos_embs = self.transformer.wpe(idx)
 
         x = inp_embs + pos_embs
-
+        cum_aux_loss = 0
         for block in self.transformer.h:
-            x = block(x, encoder_states)
+            x,aux_loss = block(x, encoder_states)
+            cum_aux_loss += aux_loss
         out = self.lm_head(x)
 
         loss = F.cross_entropy(out, targets)
+        loss += cum_aux_loss
         return out,loss
     
 
