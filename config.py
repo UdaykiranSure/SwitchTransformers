@@ -22,7 +22,12 @@ class SwitchTransformerConfig():
         seq_len,
         batch_size,
         device,
-        file_path
+        file_path,
+        optim,
+        lr, 
+        betas,
+        eps,
+        epochs
         ):
 
         self.d_model = d_model
@@ -39,8 +44,13 @@ class SwitchTransformerConfig():
         self.vocab_size = vocab_size
         self.dropout_rate = dropout_rate
         self.seq_len = seq_len
-        self.batch_size = batch_size,
+        self.batch_size = batch_size
         self.device  = device
         self.file_path = file_path
+        self.optim = optim
+        self.lr = lr
+        self.betas = betas
+        self.eps = eps
+        self.epochs = epochs
 
 
