@@ -27,7 +27,10 @@ class SwitchTransformerConfig():
         lr, 
         betas,
         eps,
-        epochs
+        weigh_decay,
+        epochs,
+        log_interval,
+        
         ):
 
         self.d_model = d_model
@@ -52,5 +55,7 @@ class SwitchTransformerConfig():
         self.betas = betas
         self.eps = eps
         self.epochs = epochs
+        self.log_interval = log_interval
+        self.weight = weigh_decay
 
 
