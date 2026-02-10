@@ -3,13 +3,14 @@ import tiktoken
 from config import SwitchTransformerConfig
 
 class Dataloader():
-    def __init__(self, config):
+    def __init__(self, config, mode):
         self.batch_size = config.batch_size
         self.seq_len = config.seq_len
         self.device = config.device
         self.tokens = self._load_and_Tokenize(config.file_path)
         self.current_pos = 0
         self.steps = len(self.tokens)//(self.batch_size*self.seq_len)
+        self.mode = mode
 
     def _load_and_Tokenize(self, file_path):
         with open(file_path, 'r') as f:
@@ -18,8 +19,11 @@ class Dataloader():
         tokens = enc.encode(text)
         tokens = torch.tensor(tokens, device = self.device)
         return tokens
+
+    def __iter__(self):
+        return self
     
-    def next_batch(self):
+    def __next__(self):
         B,T = self.batch_size, self.seq_len
         buf = self.tokens[self.current_pos: self.current_pos+ B*T + 1]
         x = buf[:-1].view(B,T)
