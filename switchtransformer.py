@@ -15,7 +15,7 @@ class Router(nn.Module):
         self.device = config.device
         self.d_model = config.d_model
         self.n_experts = config.n_experts
-        self.expert_capacity = config.expert_capacity
+        self.expert_capacity = ((config.batch_size*config.seq_len) / config.n_experts)*config.capacity_factor
         self.jitter_noise = torch.tensor(config.jitter_noise, device= self.device)
         self.ignore_padded_tokens = config.ignore_padded_tokens
         self.router_dtype = config.router_dtype
@@ -40,19 +40,23 @@ class Router(nn.Module):
         # multiplicative jitter noise on the incoming representation
         if self.jitter_noise > 0:
             hidden_states *= torch.distributions.Uniform(1-self.jitter_noise.to(self.device), 1+self.jitter_noise.to(self.device)).sample(hidden_states.shape)
-        
+        # assert hidden_states.dim != 3, f'hidden state dim {hidden_states.shape}'
         router_logits = self.classifier(hidden_states)  #(batch_size, seq_len, n_experts)
+        # assert router_logits.dim != 3, f'router logits dim {router_logits.shape}'
+
         router_probs = F.softmax(router_logits, dim=-1)
 
         top1_probs, expert_indices = torch.max(router_probs,dim=-1)   #(batch_size, seq_len, ), (batch_size, seq_len, )
         expert_indices = F.one_hot(expert_indices, self.n_experts)    #(batch_size, seq_len, n_experts)
-        assert expert_indices.ndim == 3, "expert indices dim > 3"
+        # assert expert_indices.dim != 3, f"expert indices dim {expert_indices.shape}"
 
         token_priority = torch.cumsum(expert_indices, dim=-2) #(batch_size, seq_len, n_experts)
         expert_capacity_mask = token_priority <= self.expert_capacity
         expert_indices *= expert_capacity_mask
+        # assert expert_indices.dim() != 3, f'expert_inices dim = {expert_indices.shape}'
         num_dropped = (expert_indices.sum(-1) == 0).sum()
         aux_loss = self.AuxLoss(expert_indices, router_probs)
+        # assert expert_indices.dim != 3, f'expert_inices dim = {expert_indices.shape}'
         return expert_indices, top1_probs, router_probs, aux_loss, num_dropped
 
 
@@ -86,13 +90,15 @@ class Experts(nn.Module):
 
     def forward(self, hidden_states, selected_experts, routing_weights):
         final_hidden_states = torch.zeros_like(hidden_states)
-        expert_mask = selected_experts.permute(2, 1, 0)
-
-        expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+        # expert_mask = selected_experts.permute(2, 1, 0)    #(n_experts, seq_len, batch_size)
+        expert_mask = selected_experts.permute(1, 0)    #(n_experts, seq_len*batch_size)
+        expert_hit = torch.greater(expert_mask.sum(dim=-1), 0).nonzero() #(list of experts) (,)
         for expert_idx in expert_hit:
-            idx, top_x = torch.where(expert_mask[expert_idx].squeeze(0))
+            top_x = torch.where(expert_mask[expert_idx].squeeze(0))[0]    #(seq_id), (batch_id)
             current_state = hidden_states[None, top_x].reshape(-1, hidden_states.shape[-1])
-            current_hidden_states = self.experts[f"expert_{expert_idx[0]}"](current_state) * routing_weights[top_x, idx, None]
+            current_hidden_states = self.experts[f"expert_{expert_idx[0]}"](current_state) 
+
+            current_hidden_states *= routing_weights[top_x, expert_idx,None]
             final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
         return final_hidden_states
 
@@ -109,6 +115,7 @@ class SparseMLP(nn.Module):
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
         selected_experts, top1_probs, routing_weights, aux_loss, num_dropped = self.router(hidden_states)
+        # assert selected_experts.dim() == 3, f"selected_expert shape {selected_experts.shape}"
         hidden_states = self.experts(hidden_states, selected_experts, routing_weights)
         hidden_states = hidden_states.reshape(batch_size, sequence_length, hidden_dim)        
         router_stats = {
