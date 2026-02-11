@@ -1,7 +1,7 @@
 import torch
-import numpy
+import numpy as np
 import torch.nn as nn
-from dataloader import Dataloader
+from dataloader import get_dataloader
 import math
 
 
@@ -27,9 +27,9 @@ def get_lr(it):
 def train(config, model):
     model.to(config.device)
     model.train()
-    
-    tr_dataloader = Dataloader(config, mode='train')
-    val_dataloader = Dataloader(config, mode = 'val')
+    print('using: ',config.device)
+    tr_dataloader = get_dataloader(config, split='train', val_ratio=config.val_ratio)
+    val_dataloader = get_dataloader(config, split = 'val', val_ratio=config.val_ratio)
 
     decay, no_decay = [], []
     for name, param in model.named_parameters():
@@ -61,9 +61,10 @@ def train(config, model):
 
     tokens_seen = 0
     for i in range(1,config.epochs+1):
+        running_train_loss = []
         for step in range(1, tr_dataloader.steps):
             optim.zero_grad()
-            x,y = tr_dataloader.next_batch()
+            x,y = tr_dataloader.__next__()
             out = model.forward(x,targets = y)
             loss = out['loss']
             loss.backward()
@@ -73,35 +74,46 @@ def train(config, model):
                 pg['lr'] = lr
             optim.step()
             
-            tokens_seen += x.numel()
-            log_metrics['loss'].append(loss.item())
-            log_metrics['aux_loss'].append(out['cum_aux_loss'])
-            log_metrics["grad_norm"].append(norm.item())
-            log_metrics["lr"].append(lr)
-            log_metrics["tokens"].append(tokens_seen)
-            for layer_stats in out['router_stats']:
-                log_expert_usage(layer_stats['selected_experts'],log_metrics)
-                log_router_entropy(layer_stats['router_probs'],log_metrics)
-                log_metrics['drop_rate'] = layer_stats['num_dropped']/(config.batch_size*config.seq_len)
-            
             if step%config.log_interval == 0:
-                print(f'epcohs:{i}/{config.epochs} | step: {step} | loss: {loss.item():.4f} | aux_loss: {out['cum_aux_loss']} | norm: {norm:.3f} | toekns: {tokens_seen/1e+6:.2f}M')
+                tokens_seen += x.numel()
+                log_metrics['loss'].append(loss.item())
+                log_metrics['aux_loss'].append(out['cum_aux_loss'])
+                log_metrics["grad_norm"].append(norm.item())
+                log_metrics["lr"].append(lr)
+                log_metrics["tokens"].append(tokens_seen)
+                for layer_stats in out['router_stats']:
+                    log_expert_usage(layer_stats['selected_experts'],log_metrics)
+                    log_router_entropy(layer_stats['routing_weights'],log_metrics)
+                    log_metrics['drop_rate'] = layer_stats['num_dropped']/(config.batch_size*config.seq_len)
+            running_train_loss.append(loss.item())
+            if step%1000 ==0:
+                print(step, np.mean(running_train_loss))
+        train_loss = np.mean(running_train_loss)
+        with torch.no_grad():
+            running_val_loss = []
+            for x,y in val_dataloader:
+                # x,y = val_dataloader.__next__()
+                out = model.forward(x,targets=y)
+                running_val_loss.append(out['loss'].item())
+            val_loss = np.mean(running_val_loss)
+
+        print(f'epcohs:{i}/{config.epochs} | step: {step} | train_loss: {train_loss.item():.4f} | val_loss: {val_loss.item():.4f} | aux_loss: {out["cum_aux_loss"].item():.4f} | norm: {norm:.3f} | tokens: {tokens_seen/1e+6:.2f}M')
     return log_metrics
 
 
 
 def log_expert_usage(selected_experts,log_metrics):
-    batch_size, seq_len, n_experts = selected_experts.shape
+    n_tokens, n_experts = selected_experts.shape
     with torch.no_grad():
         selected_experts = selected_experts.view(-1, n_experts)
         load = selected_experts.sum(dim=0)
-        load_frac = load / (batch_size*seq_len)
+        load_frac = load / (n_tokens)
         log_metrics['expert_usage'].append(load_frac.detach())
         log_metrics['load_imbalance'].append(load_frac.var().detach())
 
 
 def log_router_entropy(router_probs, log_metrics):
-    batch_size, seq_len, n_experts = router_probs.shape
+    n_tokens, n_experts = router_probs.shape
     with torch.no_grad():
         router_probs = router_probs.view(-1, n_experts)
         entropy = -(router_probs * torch.log(router_probs + 1e-9)).sum(dim=-1)
